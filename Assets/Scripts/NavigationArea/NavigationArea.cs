@@ -39,27 +39,31 @@ public partial class NavigationArea : MonoBehaviour
     [Range(1, 100f)]
     private float _playerLookRadius = 5;
 
-    [SerializeField] 
-    [Range(0, 10)]
-    private int _navigationStepWeight = 3;
-
     public int NavigationStepWeight { get; set; }
     
     
     private Queue<NavigationPoint> _queue = new Queue<NavigationPoint>();
     
-    private const int VISIBLE_BY_PLAYER = 100000;
+    private const int VISIBLE_BY_PLAYER = 10000;
     private const int UNPASSABLE = 1000000;
 
-    public delegate int AdditionalCostDelegate(NavigationAgent agent, Vector3 point);
+    public delegate float AdditionalCostDelegate(NavigationAgent agent, Vector3 point);
 
     public AdditionalCostDelegate additionalCost;
 
+    [SerializeField]
+    [Range(0, 50)]
+    private int _computePlayerDistanceLimit = 25;
+
+    [SerializeField]
+    [Range(0, 50)]
+    private int _computeAgentDistanceLimit = 15;
+
     public void FixedUpdate()
     {
-        if (Vector3.Distance(_cachedPlayerPosition, _player.position) > 1f)
+        if (Vector3.Distance(_cachedPlayerPosition, _player.position) > 0.1f)
         {
-            UpdateWeights();
+            UpdateDistanceToPlayer();
             _cachedPlayerPosition = _player.position;
         }
     }
@@ -83,7 +87,7 @@ public partial class NavigationArea : MonoBehaviour
     #if UNITY_EDITOR
         UnityEditor.AI.NavMeshBuilder.BuildNavMesh();
     #endif
-        UpdateWeights();
+        UpdateDistanceToPlayer();
     }
 
     private NavigationPoint GetNearestNavigationPoint(Vector3 point)
@@ -92,33 +96,34 @@ public partial class NavigationArea : MonoBehaviour
         var minIndex = 0;
         for(var i = 0; i < _navPoints.Length; i++)
         {
-            var dist = Vector3.Distance(_navPoints[i].position, point);
-            if (dist < minValue)
+            if (_navPoints[i].isPassable)
             {
-                minValue = dist;
-                minIndex = i;
+                var dist = Vector3.Distance(_navPoints[i].position, point);
+                if (dist < minValue)
+                {
+                    minValue = dist;
+                    minIndex = i;
+                }
             }
         }
         return _navPoints[minIndex];
     }
 
 
-    private void UpdateWeights()
-    {
-        //System.Diagnostics.Stopwatch SW = new System.Diagnostics.Stopwatch(); 
-        //SW.Start(); 
-        
+    private void UpdateDistanceToPlayer()
+    {        
         var beginPoint = GetNearestNavigationPoint(_player.transform.position);
         _queue.Clear();
         _queue.Enqueue(beginPoint);
-        beginPoint.weight = 0;
+
         for (var i = 0; i < _navPoints.Length; i++)
         {
-            _navPoints[i].weight = 0;
+            _navPoints[i].distanceToPlayerWeight = _computePlayerDistanceLimit;
             _navPoints[i].visited = false;
+            _navPoints[i].deepness = 0;
         }
 
-        beginPoint.weight = 0;
+        beginPoint.distanceToPlayerWeight = 0;
 
         while (_queue.Count > 0)
         {
@@ -130,35 +135,19 @@ public partial class NavigationArea : MonoBehaviour
                 for (var j = -1; j <= 1; j++)
                 {
                     var index = navPoint.index + i * height + j;
-                    if (index >= 0 && index < _navPoints.Length)
+                    if (index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
                     {
-                        if (!_navPoints[index].visited && _navPoints[index].isPassable)
+                        if (!_navPoints[index].visited && navPoint.deepness < _computePlayerDistanceLimit && _navPoints[index].isPassable)
                         {
-                            _navPoints[index].weight = navPoint.weight + _navigationStepWeight;
+                            _navPoints[index].distanceToPlayerWeight = navPoint.distanceToPlayerWeight + 1;
                             _navPoints[index].visited = true;
+                            _navPoints[index].deepness = navPoint.deepness + 1;
                             _queue.Enqueue(_navPoints[index]);
                         }
                     }
                 }
-            }
-            
+            }            
         }
-
-        for (var i = 0; i < width; i++)
-        {
-            for (var j = 0; j < height; j++)
-            {
-                if (_navPoints[i * height + j].isPassable)
-                {
-                    if (PointIsVisibleFromPlayerPosition(_navPoints[i * height + j]))
-                    {
-                        _navPoints[i * height + j].weight += VISIBLE_BY_PLAYER;
-                    }
-                }
-            }
-        }    
-       // SW.Stop();
-        //Debug.Log(SW.ElapsedMilliseconds);
     }
 
     private bool PointIsVisibleFromPlayerPosition(NavigationPoint navPoint)
@@ -173,45 +162,80 @@ public partial class NavigationArea : MonoBehaviour
 
     public Vector3 FindNearestSafePoint(NavigationAgent agent)
     {
-        var minCost = int.MaxValue;
-        var minIndex = 0;
-            
+        var minCost = float.MaxValue;
+        var minIndex = -1;
+        var maxCost = float.MinValue;
+        var maxIndex = -1;
+        
+
+        var beginPoint = GetNearestNavigationPoint(agent.transform.position);
+
+        _queue.Clear();
+        _queue.Enqueue(beginPoint);
+
         for (var i = 0; i < _navPoints.Length; i++)
         {
-            var cost = ComputeCost(_navPoints[i], agent);
+            _navPoints[i].distanceToAgentWeight = _computeAgentDistanceLimit;
+            _navPoints[i].visited = false;
+            _navPoints[i].deepness = 0;
+        }
+        beginPoint.distanceToAgentWeight = 0;
+        beginPoint.visited = true;
+
+        while (_queue.Count > 0)
+        {
+            var navPoint = _queue.Dequeue();
+            var cost = ComputeCost(navPoint, agent);
             if (cost < minCost)
             {
                 minCost = cost;
-                minIndex = i;
+                minIndex = navPoint.index;
             }
-        }
-        
-        return _navPoints[minIndex].position;
-    }
-
-    private int ComputeCost(NavigationPoint navPoint, NavigationAgent agent)
-    {
-        return navPoint.weight
-               + (additionalCost == null ? 0 : additionalCost.Invoke(agent, navPoint.position))
-               + GetNeighboursCost(navPoint)
-               + (navPoint.isPassable ? 0 : UNPASSABLE);
-    }
-    
-    private int GetNeighboursCost(NavigationPoint point)
-    {
-        var cost = 0;
-        for (var i = -1; i <= 1; i++)
-        {
-            for (var j = -1; j <= 1; j++)
+            if (cost > maxCost)
             {
-                var index = point.index + i * height + j;
-                if (index != point.index && index >= 0 && index < _navPoints.Length)
+                maxCost = cost;
+                maxIndex = navPoint.index;
+            }
+
+            for (var i = -1; i <= 1; i++)
+            {
+                for (var j = -1; j <= 1; j++)
                 {
-                    cost += Mathf.RoundToInt(_navPoints[index].weight * 0.1f);
+                    var index = navPoint.index + i * height + j;
+                    if (index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
+                    {
+                        if (!_navPoints[index].visited && navPoint.deepness < _computeAgentDistanceLimit && _navPoints[index].isPassable)
+                        {
+                            _navPoints[index].distanceToAgentWeight = navPoint.distanceToAgentWeight + 1;
+                            _navPoints[index].visited = true;
+                            _navPoints[index].deepness = navPoint.deepness + 1;
+                            _queue.Enqueue(_navPoints[index]);
+                        }
+                    }
                 }
             }
         }
-        return cost;
+        if (minCost >= VISIBLE_BY_PLAYER)//if no safe area - run away from player
+        {
+            return _navPoints[maxIndex].position;
+        }
+
+        return _navPoints[minIndex].position;
+    }
+
+    private float ComputeCost(NavigationPoint navPoint, NavigationAgent agent)
+    {
+        var baseDistance = navPoint.distanceToPlayerWeight * 2
+                + navPoint.distanceToAgentWeight;
+        if (navPoint.distanceToPlayerWeight >= _computePlayerDistanceLimit)
+        {
+            baseDistance = _computePlayerDistanceLimit + Vector3.Distance(navPoint.position, _player.position);
+        }
+            return baseDistance
+                + (additionalCost == null ? 0 : additionalCost.Invoke(agent, navPoint.position))
+                   + (navPoint.isPassable ? 0 : UNPASSABLE)
+                   + (PointIsVisibleFromPlayerPosition(navPoint) ? VISIBLE_BY_PLAYER : 0);
+        
     }
 
     private bool CheckAvailableForPathfinding(float x, float z)
@@ -254,9 +278,12 @@ public partial class NavigationArea : MonoBehaviour
         }
         [FormerlySerializedAs("pos")] public Vector3 position;
         public bool isPassable;
-        public int weight;
+        public float distanceToPlayerWeight;
+        public float distanceToAgentWeight;
+
 
         public int index;
         public bool visited;
+        public int deepness;
     }
 }

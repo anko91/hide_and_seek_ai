@@ -5,19 +5,14 @@ using UnityEngine.Serialization;
 
 public class NavigationAgentsCommander : MonoBehaviour
 {
-
-    [SerializeField]
-    [Range(1f, 100f)]
-    private float _agentsPositionDistance = 5f;
-
-    [SerializeField]
-    [Range(0f, 5f)]
-    private float _agentsMovementCost = 1f;
-
      [SerializeField]
     private NavigationArea _navigationArea;
 
     private List<NavigationAgent> _agents = new List<NavigationAgent>();
+    [SerializeField]
+
+    [Range(0f, 10f)]
+    private float _minDistanceBetweenAgents = 3f;
 
     public void RegisterAgent(NavigationAgent agent)
     {
@@ -45,21 +40,24 @@ public class NavigationAgentsCommander : MonoBehaviour
                 _agents[i].MoveTo(point);
                 yield return null;
             }
-            yield return null;
+            //yield return null;
         }
     }
-
-    public int AdditionalCost(NavigationAgent currentAgent, Vector3 point)
+    
+    public float AdditionalCost(NavigationAgent currentAgent, Vector3 point)
     {
-        var cost = 0;
+        var cost = 0f;
         for (var i = 0; i < _agents.Count; i++)
         {
             if (_agents[i] != currentAgent)
             {
-                cost += Mathf.RoundToInt(_agentsPositionDistance / (Vector3.Distance(_agents[i].TargetPoint, point) + 1));
+                var dist = Vector3.Distance(_agents[i].TargetPoint, point);
+                if (dist < _minDistanceBetweenAgents)
+                {
+                    cost += 1000f;
+                }
             }
         }
-        cost += Mathf.RoundToInt(Vector3.Distance(currentAgent.transform.position, point) * _agentsMovementCost);
         return cost;
     }
     
@@ -72,6 +70,9 @@ public class NavigationAgentsCommander : MonoBehaviour
             red.a = 0.5f;
             Gizmos.color = red;
             Gizmos.DrawSphere(point, 2f);
+
+            Gizmos.color = Color.black;
+            Gizmos.DrawLine(agent.transform.position, agent.TargetPoint);
         }
     }
 }
