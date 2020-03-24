@@ -43,8 +43,9 @@ public partial class NavigationArea : MonoBehaviour
     
     
     private Queue<NavigationPoint> _queue = new Queue<NavigationPoint>();
-    
+
     private const int VISIBLE_BY_PLAYER = 10000;
+    private const int NEIGHTBOUR_OF_VISIBLE_BY_PLAYER = 10;
     private const int UNPASSABLE = 1000000;
 
     public delegate float AdditionalCostDelegate(NavigationAgent agent, Vector3 point);
@@ -59,7 +60,7 @@ public partial class NavigationArea : MonoBehaviour
     [Range(0, 50)]
     private int _computeAgentDistanceLimit = 15;
 
-    public void FixedUpdate()
+    public void Update()
     {
         if (Vector3.Distance(_cachedPlayerPosition, _player.position) > 0.1f)
         {
@@ -186,9 +187,10 @@ public partial class NavigationArea : MonoBehaviour
         {
             var navPoint = _queue.Dequeue();
             var cost = ComputeCost(navPoint, agent);
-            if (cost < minCost)
+            navPoint.cost = cost;
+            if (cost + GetNeightboursCost(navPoint) < minCost)
             {
-                minCost = cost;
+                minCost = cost + GetNeightboursCost(navPoint);
                 minIndex = navPoint.index;
             }
             if (cost > maxCost)
@@ -221,6 +223,26 @@ public partial class NavigationArea : MonoBehaviour
         }
 
         return _navPoints[minIndex].position;
+    }
+
+    private float GetNeightboursCost(NavigationPoint navPoint)
+    {
+        var cost = 0f;
+        for (var i = -1; i <= 1; i++)
+        {
+            for (var j = -1; j <= 1; j++)
+            {
+                var index = navPoint.index + i * height + j;
+                if (index != navPoint.index && index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
+                {
+                    if (_navPoints[index].isPassable && _navPoints[index].cost >= VISIBLE_BY_PLAYER)
+                    {
+                        cost += NEIGHTBOUR_OF_VISIBLE_BY_PLAYER;
+                    }
+                }
+            }
+        }
+        return cost;
     }
 
     private float ComputeCost(NavigationPoint navPoint, NavigationAgent agent)
@@ -280,6 +302,7 @@ public partial class NavigationArea : MonoBehaviour
         public bool isPassable;
         public float distanceToPlayerWeight;
         public float distanceToAgentWeight;
+        public float cost;
 
 
         public int index;
