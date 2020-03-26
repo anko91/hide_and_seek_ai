@@ -8,24 +8,30 @@ public class NavigationAgentsCommander : MonoBehaviour
      [SerializeField]
     private NavigationArea _navigationArea;
 
-    private List<NavigationAgent> _agents = new List<NavigationAgent>();
-    [SerializeField]
+    private List<NavigationAgent> _agentsTmp = new List<NavigationAgent>();
+    private NavigationAgent[] _agents;
 
+    [SerializeField]
     [Range(0f, 10f)]
-    private float _minDistanceBetweenAgents = 3f;
+    private float _minDistanceBetweenAgents = 5f;
+
+    public int NavigationAgentsTick { get; private set; }
 
     public void RegisterAgent(NavigationAgent agent)
     {
-        _agents.Add(agent);
+        _agentsTmp.Add(agent);
+        _agents = _agentsTmp.ToArray();
     }
 
     public void UnregisterAgent(NavigationAgent agent)
     {
-        _agents.Remove(agent);
+        _agentsTmp.Remove(agent);
+        _agents = _agentsTmp.ToArray();
     }
 
     private void Start()
     {
+        NavigationAgentsTick = 0;
         StartCoroutine(UpdateNavigationPointsRoutine());
         _navigationArea.additionalCost = AdditionalCost;
     }
@@ -34,45 +40,30 @@ public class NavigationAgentsCommander : MonoBehaviour
     {
         while (true)
         {
-            for (var i = 0; i < _agents.Count; i++)
+            for (var i = 0; i < _agents.Length; i++)
             {
                 var point = _navigationArea.FindNearestSafePoint(_agents[i]);
                 _agents[i].MoveTo(point);
                 yield return null;
             }
-            //yield return null;
+            NavigationAgentsTick++;
         }
     }
     
     public float AdditionalCost(NavigationAgent currentAgent, Vector3 point)
     {
         var cost = 0f;
-        for (var i = 0; i < _agents.Count; i++)
+        for (var i = 0; i < _agents.Length; i++)
         {
-            if (_agents[i] != currentAgent)
+            if (_agents[i].Id != currentAgent.Id)
             {
                 var dist = Vector3.Distance(_agents[i].TargetPoint, point);
                 if (dist < _minDistanceBetweenAgents)
                 {
-                    cost += 1000f;
+                    cost += 100f * (_minDistanceBetweenAgents - dist) / _minDistanceBetweenAgents;
                 }
             }
         }
         return cost;
-    }
-    
-    private void OnDrawGizmos()
-    {
-        foreach (var agent in _agents)
-        {
-            var point = agent.TargetPoint;
-            var red = Color.red;
-            red.a = 0.5f;
-            Gizmos.color = red;
-            Gizmos.DrawSphere(point, 2f);
-
-            Gizmos.color = Color.black;
-            Gizmos.DrawLine(agent.transform.position, agent.TargetPoint);
-        }
     }
 }

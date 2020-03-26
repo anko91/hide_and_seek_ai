@@ -13,6 +13,7 @@ public class NavigationAreaEditor : Editor
         {
             var area = target as NavigationArea;
             area.RebuildArea();
+            Debug.Log("Area rebuilded");
         }
     }
 }

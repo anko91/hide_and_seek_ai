@@ -34,10 +34,12 @@ public partial class NavigationArea : MonoBehaviour
     public Transform Player => _player;
 
     private Vector3 _cachedPlayerPosition = Vector3.positiveInfinity;
+    [SerializeField]
+    [Range(0, 100f)]
+    private float _playerLookRadius = 5f;
 
-    [SerializeField]    
-    [Range(1, 100f)]
-    private float _playerLookRadius = 5;
+    [SerializeField]
+    private NavigationType _navigationType = NavigationType.SimpleNearestPoint;
 
     public int NavigationStepWeight { get; set; }
     
@@ -51,23 +53,14 @@ public partial class NavigationArea : MonoBehaviour
     public delegate float AdditionalCostDelegate(NavigationAgent agent, Vector3 point);
 
     public AdditionalCostDelegate additionalCost;
-
-    [SerializeField]
-    [Range(0, 50)]
-    private int _computePlayerDistanceLimit = 25;
-
+    
     [SerializeField]
     [Range(0, 50)]
     private int _computeAgentDistanceLimit = 15;
+    public float ComputeAgentDistanceLimit => _computeAgentDistanceLimit * _meshStep;
 
-    public void Update()
-    {
-        if (Vector3.Distance(_cachedPlayerPosition, _player.position) > 0.1f)
-        {
-            UpdateDistanceToPlayer();
-            _cachedPlayerPosition = _player.position;
-        }
-    }
+    [SerializeField]
+    private bool _computeNeightboursCost = true;
 
     public void RebuildArea()
     {
@@ -88,77 +81,38 @@ public partial class NavigationArea : MonoBehaviour
     #if UNITY_EDITOR
         UnityEditor.AI.NavMeshBuilder.BuildNavMesh();
     #endif
-        UpdateDistanceToPlayer();
     }
 
     private NavigationPoint GetNearestNavigationPoint(Vector3 point)
     {
-        var minValue = float.MaxValue;
-        var minIndex = 0;
-        for(var i = 0; i < _navPoints.Length; i++)
+        var i = Mathf.RoundToInt((point.x - transform.position.x + _areaWidth / 2f) / _meshStep);
+        var j = Mathf.RoundToInt((point.z - transform.position.z + _areaHeight / 2f) / _meshStep);
+        var index = i * height + j;
+        if (index < 0 || index >= _navPoints.Length)
         {
-            if (_navPoints[i].isPassable)
+            var minValue = float.MaxValue;
+            for (var k = 0; k < _navPoints.Length; k++)
             {
-                var dist = Vector3.Distance(_navPoints[i].position, point);
-                if (dist < minValue)
+                if (_navPoints[k].isPassable)
                 {
-                    minValue = dist;
-                    minIndex = i;
+                    var dist = Vector3.Distance(_navPoints[k].position, point);
+                    if (dist < minValue)
+                    {
+                        minValue = dist;
+                        index = k;
+                    }
                 }
             }
         }
-        return _navPoints[minIndex];
-    }
-
-
-    private void UpdateDistanceToPlayer()
-    {        
-        var beginPoint = GetNearestNavigationPoint(_player.transform.position);
-        _queue.Clear();
-        _queue.Enqueue(beginPoint);
-
-        for (var i = 0; i < _navPoints.Length; i++)
+        if (!_navPoints[index].isPassable)
         {
-            _navPoints[i].distanceToPlayerWeight = _computePlayerDistanceLimit;
-            _navPoints[i].visited = false;
-            _navPoints[i].deepness = 0;
-        }
-
-        beginPoint.distanceToPlayerWeight = 0;
-
-        while (_queue.Count > 0)
-        {
-            var navPoint = _queue.Dequeue();
-            navPoint.visited = true;
-            
-            for (var i = -1; i <= 1; i++)
+            while (!_navPoints[index].isPassable)
             {
-                for (var j = -1; j <= 1; j++)
-                {
-                    var index = navPoint.index + i * height + j;
-                    if (index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
-                    {
-                        if (!_navPoints[index].visited && navPoint.deepness < _computePlayerDistanceLimit && _navPoints[index].isPassable)
-                        {
-                            _navPoints[index].distanceToPlayerWeight = navPoint.distanceToPlayerWeight + 1;
-                            _navPoints[index].visited = true;
-                            _navPoints[index].deepness = navPoint.deepness + 1;
-                            _queue.Enqueue(_navPoints[index]);
-                        }
-                    }
-                }
-            }            
+                index = (index + 1) % _navPoints.Length;
+            }
         }
-    }
-
-    private bool PointIsVisibleFromPlayerPosition(NavigationPoint navPoint)
-    {
-        var origin = navPoint.position + Vector3.up;
-        var playerPos = _player.transform.position;
-        RaycastHit hit;
-        var distanceFromPlayerToPoint = Vector3.Magnitude(playerPos - origin);
-        int layerMask = _player.gameObject.layer;
-        return !(distanceFromPlayerToPoint > _playerLookRadius || Physics.Raycast(origin, playerPos - origin, out hit, distanceFromPlayerToPoint, layerMask));
+        Debug.DrawLine(_navPoints[index].position, _navPoints[index].position + Vector3.up * 10, Color.black);
+        return _navPoints[index];
     }
 
     public Vector3 FindNearestSafePoint(NavigationAgent agent)
@@ -167,51 +121,42 @@ public partial class NavigationArea : MonoBehaviour
         var minIndex = -1;
         var maxCost = float.MinValue;
         var maxIndex = -1;
-        
 
+        var nextPathPoint = Vector3.zero;
+        if (_navigationType == NavigationType.ByUnityNavMeshPath)
+        {
+            agent.GetNearestPointToTarget(_player.position);
+        }
         var beginPoint = GetNearestNavigationPoint(agent.transform.position);
 
-        _queue.Clear();
-        _queue.Enqueue(beginPoint);
-
-        for (var i = 0; i < _navPoints.Length; i++)
+        if (agent.TargetPoint != Vector3.negativeInfinity)
         {
-            _navPoints[i].distanceToAgentWeight = _computeAgentDistanceLimit;
-            _navPoints[i].visited = false;
-            _navPoints[i].deepness = 0;
+            var prevTargetPoint = GetNearestNavigationPoint(agent.TargetPoint);
+            minCost = EvaluateCost(prevTargetPoint, agent, nextPathPoint) + ComputeCost(prevTargetPoint, agent);
+            minIndex = prevTargetPoint.index;
         }
-        beginPoint.distanceToAgentWeight = 0;
-        beginPoint.visited = true;
 
-        while (_queue.Count > 0)
+
+        for (var i = -_computeAgentDistanceLimit; i <= _computeAgentDistanceLimit; i++)
         {
-            var navPoint = _queue.Dequeue();
-            var cost = ComputeCost(navPoint, agent);
-            navPoint.cost = cost;
-            if (cost + GetNeightboursCost(navPoint) < minCost)
+            for (var j = -_computeAgentDistanceLimit; j<= _computeAgentDistanceLimit; j++)
             {
-                minCost = cost + GetNeightboursCost(navPoint);
-                minIndex = navPoint.index;
-            }
-            if (cost > maxCost)
-            {
-                maxCost = cost;
-                maxIndex = navPoint.index;
-            }
-
-            for (var i = -1; i <= 1; i++)
-            {
-                for (var j = -1; j <= 1; j++)
+                var index = beginPoint.index + i * height + j;
+                if (index >= 0 && index < _navPoints.Length && beginPoint.index % height + j >= 0 && beginPoint.index % height + j < height && _navPoints[index].isPassable)
                 {
-                    var index = navPoint.index + i * height + j;
-                    if (index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
+                    var cost = EvaluateCost(_navPoints[index], agent, nextPathPoint);
+                    if (cost < minCost)
                     {
-                        if (!_navPoints[index].visited && navPoint.deepness < _computeAgentDistanceLimit && _navPoints[index].isPassable)
+                        cost += ComputeCost(_navPoints[index], agent);
+                        if (cost < minCost)
                         {
-                            _navPoints[index].distanceToAgentWeight = navPoint.distanceToAgentWeight + 1;
-                            _navPoints[index].visited = true;
-                            _navPoints[index].deepness = navPoint.deepness + 1;
-                            _queue.Enqueue(_navPoints[index]);
+                            minCost = cost;
+                            minIndex = index;
+                        }
+                        if (cost > maxCost)
+                        {
+                            maxCost = cost;
+                            maxIndex = index;
                         }
                     }
                 }
@@ -225,6 +170,23 @@ public partial class NavigationArea : MonoBehaviour
         return _navPoints[minIndex].position;
     }
 
+    private bool PointIsVisibleFromPlayerPosition(NavigationPoint point)
+    {
+        if (point.lastVisibilityCheckTick == Game.Instance.Commander.NavigationAgentsTick)
+        {
+            return point.visibleByPlayer;
+        }
+        var origin = point.position + Vector3.up * 0.5f;
+        var playerPos = _player.transform.position;
+        RaycastHit hit;
+        var target = playerPos - origin;
+        var distanceFromPlayerToPoint = Vector3.Magnitude(target);
+        int layerMask = _player.gameObject.layer;
+        point.lastVisibilityCheckTick = Game.Instance.Commander.NavigationAgentsTick;
+        point.visibleByPlayer = !(distanceFromPlayerToPoint > _playerLookRadius || Physics.Raycast(origin, target, out hit, distanceFromPlayerToPoint, layerMask));
+        return point.visibleByPlayer;
+    }
+
     private float GetNeightboursCost(NavigationPoint navPoint)
     {
         var cost = 0f;
@@ -234,8 +196,8 @@ public partial class NavigationArea : MonoBehaviour
             {
                 var index = navPoint.index + i * height + j;
                 if (index != navPoint.index && index >= 0 && index < _navPoints.Length && navPoint.index % height + j >= 0 && navPoint.index % height + j < height)
-                {
-                    if (_navPoints[index].isPassable && _navPoints[index].cost >= VISIBLE_BY_PLAYER)
+                {                    
+                    if (_navPoints[index].isPassable && PointIsVisibleFromPlayerPosition(_navPoints[index]))
                     {
                         cost += NEIGHTBOUR_OF_VISIBLE_BY_PLAYER;
                     }
@@ -247,17 +209,21 @@ public partial class NavigationArea : MonoBehaviour
 
     private float ComputeCost(NavigationPoint navPoint, NavigationAgent agent)
     {
-        var baseDistance = navPoint.distanceToPlayerWeight * 2
-                + navPoint.distanceToAgentWeight;
-        if (navPoint.distanceToPlayerWeight >= _computePlayerDistanceLimit)
+        var addCost = additionalCost == null ? 0 : additionalCost.Invoke(agent, navPoint.position);
+        var neighboursCost = _computeNeightboursCost ? GetNeightboursCost(navPoint) : 0;
+        return (PointIsVisibleFromPlayerPosition(navPoint) ? VISIBLE_BY_PLAYER - addCost : addCost) + neighboursCost;
+    }
+
+    private float EvaluateCost(NavigationPoint navPoint, NavigationAgent agent, Vector3 nextPathPoint)
+    {
+        switch(_navigationType)
         {
-            baseDistance = _computePlayerDistanceLimit + Vector3.Distance(navPoint.position, _player.position);
+            case NavigationType.ByUnityNavMeshPath:
+                return 2 * Vector3.Distance(navPoint.position, agent.transform.position) + 3f * Vector3.Distance(navPoint.position, nextPathPoint) + 0.5f * Vector3.Distance(navPoint.position, _player.position);
+            case NavigationType.SimpleNearestPoint:
+            default:
+                return 1 * Vector3.Distance(navPoint.position, agent.transform.position) + 2f * Vector3.Distance(navPoint.position, _player.position);
         }
-            return baseDistance
-                + (additionalCost == null ? 0 : additionalCost.Invoke(agent, navPoint.position))
-                   + (navPoint.isPassable ? 0 : UNPASSABLE)
-                   + (PointIsVisibleFromPlayerPosition(navPoint) ? VISIBLE_BY_PLAYER : 0);
-        
     }
 
     private bool CheckAvailableForPathfinding(float x, float z)
@@ -298,15 +264,19 @@ public partial class NavigationArea : MonoBehaviour
             this.position = position;
             this.isPassable = passability;
         }
-        [FormerlySerializedAs("pos")] public Vector3 position;
+        public Vector3 position;
         public bool isPassable;
-        public float distanceToPlayerWeight;
-        public float distanceToAgentWeight;
-        public float cost;
+
+        public bool visibleByPlayer = false;
+        public int lastVisibilityCheckTick = 0;
 
 
         public int index;
-        public bool visited;
-        public int deepness;
     }
+}
+
+public enum NavigationType
+{
+    ByUnityNavMeshPath = 1,
+    SimpleNearestPoint = 2
 }
